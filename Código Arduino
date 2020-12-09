@@ -1,0 +1,221 @@
+#include <NewPing.h>
+#include "ThingSpeak.h"
+#include "Credenciales.h"
+#include <DHTesp.h>
+#include <ESP8266WiFi.h>
+
+
+char ssid[] = CRED_SSID;   // nombre de la red WiFi
+char password[] = CRED_PASS; // password de acceso a la red WiFi
+
+#define TRIGGER_PIN 5  // Ultrasonic sensor trig to Arduino pin 7
+#define ECHO_PIN 4     // Ultrasonic sensor echo to Arduino pin 8
+#define MAX_DISTANCE 200
+#define OTROLED 14
+
+int distance; // Variable for distance
+int people = 0; // Variable for number of people
+float capacidad = 0; // capacidad en tienda
+boolean count = false; // State for counting
+NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE);
+
+bool EDO_LED = LOW;
+String ESTADO = "No hay fila";
+String color = "RED";
+
+bool OTROLEDD = LOW;
+String ESTADDO = "No ha salido nadie";
+String C = "RED";
+
+long rssi;
+
+WiFiServer server(80);
+
+WiFiClient  client;
+
+unsigned long myChannelNumber = CRED_CH_ID;
+const char * myWriteAPIKey = CRED_WRITE_APIKEY;
+
+String s; // variable para contener la página web en HTML
+
+void setup() // Built-in initialization block
+{
+  Serial.begin(115200);
+
+  pinMode(TRIGGER_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(OTROLED, OUTPUT);
+
+  conectarWiFi();
+
+  ThingSpeak.begin(client);
+}
+
+void loop() {// Main loop auto-repeats
+  Serial.print("Conectado a ");
+  Serial.println(ssid);
+  Serial.println("Servidor Web en la dirección: ");
+  Serial.println(WiFi.localIP()); // Print the IP address
+  Serial.println(s);
+
+  distance = sonar.ping_cm(); // Ping cada 50 milisegundos
+  // mas de 100 no contar
+  if (distance > 100 && count) {
+    count = false;
+    digitalWrite(TRIGGER_PIN, LOW);
+  }
+  // menos de 100 contar 1
+  if (distance < 100 && distance != 0 && !count) {
+    count = true;
+    people ++; // Keep adding 1 per count
+    digitalWrite(TRIGGER_PIN, HIGH);
+  }
+
+  capacidad=float(people)/3;
+  
+  rssi = WiFi.RSSI();
+
+  Serial.print("Intensidad WiFi dB: ");
+  Serial.println(rssi);
+  Serial.print("Actuador: ");
+  Serial.println(ESTADO);
+  Serial.println(people); // Print number of people to LCD screen
+  Serial.println(capacidad);
+  
+  ThingSpeak.setField(2, rssi);
+  ThingSpeak.setField(1, EDO_LED);
+  ThingSpeak.setField(3, people);
+  ThingSpeak.setField(4, capacidad);
+
+  int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+  if (x == 200) {
+    Serial.println("Datos actualizados con éxito en Thingspeak.com...");
+  }
+  else {
+    Serial.println("Problema! NO se pudo actualizar datos en Thingspeak.com.... Código de error " + String(x));
+  }
+
+  WiFiClient client = server.available();
+  if (!client) {
+    return;
+  }
+  delay(1);
+
+  while (!client.available()) { }
+
+  String req = client.readStringUntil('\r');
+
+  if (req.indexOf("ON") != -1) {
+    EDO_LED = HIGH;
+    ESTADO = "Si hay fila";
+    color = "lime";
+  }
+
+  if (req.indexOf("OFF") != -1) {
+    EDO_LED = LOW;
+    ESTADO = "No hay fila";
+    color = "salmon";
+  }
+  
+    if (req.indexOf("SALIDA") != -1) {
+    OTROLEDD = HIGH;
+    ESTADDO = "Ha salido una persona";
+    C = "lime";
+    people = people-1;
+    Serial.println(req);
+    
+  
+  }
+  else {people = people;}
+  
+      if (req.indexOf("NOSALIDA") != -1) {
+    OTROLEDD = LOW;
+    ESTADDO = "No ha salido nadie";
+    C = "salmon";
+    people = people+1;
+  
+  }
+  
+  digitalWrite(LED_BUILTIN,!EDO_LED); // se coloca EDO_LED negado porque el led de la placa es de lógica invertida
+
+  s = "";
+  s = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+  s += "<html><meta http-equiv='Content-Type' content='text/html; charset=utf-8'/>";
+  s += "<meta HTTP-EQUIV=refresh content=1>";
+  s += "<head><title>Estatus de Tienda</title></head><body align=left>";
+  s += "<font color=\"red\"><b>Información de la tienda</font><br></b>";
+  s += "<hr/>"; // coloca línea horizontal
+  s += "<table align=center>";
+  s += "<tr><td>";
+  s += "<strong>Personas en tienda: </strong></td><td>";
+  s +=  people;
+  s += "<tr><td>";
+  s += "<strong>Capacidad en tienda </strong></td><td>";
+  s +=  capacidad;
+  s += "%";
+  s += "<tr><td>";
+  s += "<strong>Intensidad de la señal WiFi: </strong></td><td>";
+  s +=  rssi;
+  s += " dB</td><td>-120<meter value=";
+  s +=  rssi;
+  s += " min = -120 max= 0></meter>dB</td></tr>";
+  s += "<tr><td>";
+  s += "<strong>Actualmente: </strong></td><td bgcolor=";
+  s +=  color;
+  s += ">";
+  s += ESTADO;
+  s += "</td></tr>";
+  s += "<tr><td><strong>¿Hay fila en tienda? </strong></td>";
+  s += "<td><button onclick=\"location.href='/ON'\">Hay fila</button></td>";
+  s += "<td><button onclick=\"location.href='/OFF'\">No hay fila en la tienda</button></td>";
+  s += "<tr><td>";
+  s += "<strong>¿Ha salido alguien de la tienda?: </strong></td><td bgcolor=";
+  s +=  C;
+  s += ">";
+  s += ESTADDO;
+  s += "</td></tr>";
+  s += "<td><button onclick=\"location.href='/SALIDA'\">Ha salido alguien de la tienda</button></td>";
+  s += "<td><button onclick=\"location.href='/NOSALIDA'\">No ha salido nadie</button></td>";
+  s += "</tr>";
+  s += "</table>";
+  s += "<hr/>"; // coloca linea horizontal
+  s += "<p>&nbsp;</p>"; // cierra linea
+  s += "</body></html>";
+
+  client.print(s);
+  delay(500);
+  client.flush(); // limpia buffer de datos del cliente
+}
+
+void  conectarWiFi() {
+  Serial.print("Intentando conexión con ");
+  Serial.println(ssid);
+  WiFi.mode(WIFI_STA);  // Modo de conexión Station (servidor)
+  WiFi.begin(ssid, password); // prepara conexión WiFi a la red
+  while (WiFi.status() != WL_CONNECTED) { // Intentar mientras no haya conexión
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("Conexión a red WiFi exitosa");
+ 
+  server.begin(); // Inicializa el módulo ESP8266 como servidor
+  Serial.println("* Servidor Web iniciado *");
+  Serial.print("Disponible en la dirección: ");
+  Serial.println(WiFi.localIP()); // Print the IP address
+}
+
+
+
+ABRIR OTRA PESTAÑA: credenciales.h
+
+// Archivo de credenciales WiFi y Thingspeak para el ESP8266 para implementar un nodo de medición WiFi
+// Por Camilo Duque
+// camilo.duque@tec.mx
+
+// Parámetros de acceso a red WiFi 
+#define CRED_SSID "INFINITUMB8BC_2.4"   // WiFi nombre de red
+#define CRED_PASS "51xR2Yv4nU"          // WiFi password
+
+// Parámetros de acceso a Thingspeak
+#define CRED_CH_ID 1248462     // Numero de canal en ThingSpeak.com
+#define CRED_WRITE_APIKEY "4U2A2MN9J51YG3U1"   // Código de write API Key del canal en ThingSpeak.com
